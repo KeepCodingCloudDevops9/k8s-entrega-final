@@ -16,7 +16,7 @@ A Helm chart for Kubernetes
 | autoscaling.targetMemoryUtilizationPercentage | int | `30` |  |
 | config.mongoService | string | `"mongodb"` |  |
 | image.pullPolicy | string | `"IfNotPresent"` |  |
-| image.repository | string | `"xoanmallon/kc-7-liberando-productos-practica-final"` |  |
+| image.repository | string | `"ghcr.io/keepcodingclouddevops8/kc-8-liberando-productos-practica-final"` |  |
 | image.tag | string | `"1.0.0"` |  |
 | imageCredentials | object | `{"password":"","registry":"https://index.docker.io/v2/","username":""}` | imageCredentials for DockerHub private account |
 | imagePullSecrets[0].name | string | `"dockerhub-access"` |  |
