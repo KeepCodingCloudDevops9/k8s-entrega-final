@@ -34,11 +34,8 @@ $(VENV)/bin/activate: requirements.txt
 
 .PHONY: docker-build
 docker-build: ## Build image
-	docker build -t $(IMAGE) -t $(IMAGE_LATEST) -t $(IMAGE_GHCR) -t $(IMAGE_GHRC_LATEST) .
+	docker buildx build --platform=linux/amd64,linux/arm64 . -t $(IMAGE) -t $(IMAGE_LATEST) -t $(IMAGE_GHCR) -t $(IMAGE_GHRC_LATEST)
 
 .PHONY: publish
 publish: docker-build ## Publish image
-	docker push $(IMAGE)
-	docker push $(IMAGE_LATEST)
-	docker push $(IMAGE_GHCR)
-	docker push $(IMAGE_GHRC_LATEST)
+	docker buildx build --push --platform=linux/amd64,linux/arm64 . -t $(IMAGE) -t $(IMAGE_LATEST) -t $(IMAGE_GHCR) -t $(IMAGE_GHRC_LATEST)

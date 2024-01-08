@@ -250,3 +250,63 @@ Se deberá entregar mediante un repositorio realizado a partir del original lo s
 - Ficheros para CI/CD configurados y ejemplos de ejecución válidos
 - Ficheros para despliegue y configuración de prometheus de todo lo relacionado con este, así como el dashboard creado exportado a `JSON` para poder reproducirlo
 - `README.md` donde se explique como se ha abordado cada uno de los puntos requeridos en el apartado anterior, con ejemplos prácticos y guía para poder reproducir cada uno de ellos
+
+## Solución
+
+### Nuevo endpoint y tests unitarios
+
+- Se ha modificado el archivo [`src/application/app.py`](src/application/app.py) para añadir el nuevo endpoint:
+
+  ```python
+  @app.get("/bye")
+  async def read_bye():
+      """Implement bye endpoint"""
+      # Increment counter used for register the total number of call in the webserver
+      REQUESTS.inc()
+      # Increment counter used for register the total number of call to the bye endpoint
+      BYE_ENDPOINT_REQUESTS.inc()
+      return {"msg": "Bye bye"}
+  ```
+
+- Se ha modificado el archivo [`src/tests/app_test.py`](src/tests/app_test.py) para añadir el nuevo test que prueba el endpoint añadido:
+
+  ```python
+  @pytest.mark.asyncio
+  async def read_bye_test(self):
+      """Tests the bye endpoint"""
+      before_bye_call = REGISTRY.get_sample_value('bye_requests_total')
+      assert before_bye_call == 0
+      
+      response = client.get("/bye")
+      after_bye_call = REGISTRY.get_sample_value('bye_requests_total')
+      
+      assert after_bye_call == 1
+      assert response.status_code == 200
+      assert response.json() == {"msg": "Bye bye"}
+  ```
+
+  > Se puede observar como en el test también se ha comprobado el correcto funcionamiento del contador de Prometheus
+
+- Si se sigue cualquiera de las modalidades descritas en la sección [ejecución del servidor](#ejecución-de-servidor) se puede observar el nuevo endpoint implementado, a través de llamadas a los diferentes endpoints:
+
+  - Para la comprobación de la existencia del nuevo endpoint es necesario realizar una petición al endpoint `/`
+
+      ```sh
+      curl -X 'GET' \
+      'http://0.0.0.0:8081/bye' \
+      -H 'accept: application/json'
+      ```
+
+      Debería devolver la siguiente respuesta:
+
+      ```json
+      {"message":"Bye bye"}
+      ```
+
+  - Para la comprobación de registro de métricas es necesario acceder a la URL `http://0.0.0.0:8000`, se podrán ver todas las métricas con los valores actuales en ese momento. Si se realiza varias llamadas al nuevo endpoint `/bye` se verá como el contador utilizado para registrar las llamadas a ese endpoint, `bye_requests_total` ha aumentado, se debería ver algo como lo mostrado a continuación:
+
+    ```sh
+    # HELP bye_requests_total Total number of requests to bye endpoint
+    # TYPE bye_requests_total counter
+    bye_requests_total 2.0
+    ```
