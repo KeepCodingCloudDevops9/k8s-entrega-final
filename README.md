@@ -310,3 +310,222 @@ Se deberá entregar mediante un repositorio realizado a partir del original lo s
     # TYPE bye_requests_total counter
     bye_requests_total 2.0
     ```
+
+### Pipeline CI/CD
+
+Se ha optado por la implementación del pipeline de CI/CD haciendo uso de GitHub Actions. Para esto se han implementado dos pipelines:
+
+- [Test](./.github/workflows/test.yaml), que se encargará de realizar una llamada a los tests unitarios y comprobará que se cumple con la cobertura configurada
+  - Se puede ver un [ejemplo de ejecución](https://github.com/KeepCodingCloudDevops8/liberando-productos-practica-final/actions/runs/7453071562) en la siguiente imagen
+  ![example pipeline test](./img/example_pipeline_test.png)
+- [Release](./.github/workflows/release.yaml), que se ejecutará únicamente en la rama `main` cuando el workflow `Test` finalice satisfactoramiente y utiliza [semantic-release](https://github.com/semantic-release/github) para comprobar en base a los commits si es necesario publicar una versión, en caso de ser así publicará la imagen tanto en [DockerHub](https://hub.docker.com/repository/docker/xoanmallon/kc-8-liberando-productos-practica-final), como en el [GHCR](https://github.com/KeepCodingCloudDevops8/liberando-productos-practica-final/pkgs/container/kc-7-liberando-productos-practica-final) del repositorio, y actualizará los valores necesarios en el [helm chart](./helm/fast-api-webapp/) creado para desplegar la aplicación en el repositorio
+  - Se puede ver un [ejemplo de ejecución](https://github.com/KeepCodingCloudDevops8/liberando-productos-practica-final/actions/runs/7453076431) en la siguiente imagen
+  ![example pipeline release](./img/example_pipeline_release.png)
+
+  - Es importante tener en cuenta que para aquellas versiones que sea necesario publicar versiones se publicará una [release asociada en el repositorio](https://github.com/KeepCodingCloudDevops8/keepcoding-devops-liberando-productos-practica-final/releases), tal y como se puede ver en la siguiente imagen
+  ![example release published](./img/example_release_published.png)
+
+### Monitorización y alertas
+
+Para la monitorización de la aplicación se hace uso del cliente de prometheus en la aplicación, el cuál expone en la dirección [http://localhost:8000](http://localhost:8000) tal y como se explicó en la sección [proyecto inicial](#proyecto-inicial)
+
+#### Ejecución de Prometheus
+
+**Software necesario**
+
+- [minikube](https://minikube.sigs.k8s.io/docs/)
+- [kubectl](https://kubernetes.io/docs/reference/kubectl/kubectl/)
+- [helm](https://helm.sh/)
+
+Para poder recabar las métricas expuestas necesitamos levantar Prometheus. Para esto se hará uso de `minikube`, siguiendo los siguientes pasos:
+
+- Es necesario realizar o haber realizado los [prerequisitos del laboratorio de monitoring y autoscaling de liberando-productos](https://github.com/KeepCodingCloudDevops8/liberando-productos/tree/main/labs/3-monitoring-autoscaling#prerequisitos), **especialmente la creación y configuración de la aplicación de slack para el envío de notificaciones**
+- Crear cluster de Kubernetes utilizando `minikube` con addon `metrics-server` habilitado:
+
+  ```sh
+  minikube start --kubernetes-version='v1.28.3' \
+    --cpus=4 \
+    --memory=4096 \
+    --addons="metrics-server,default-storageclass,storage-provisioner"
+  ```
+
+- Añadir el repositorio helm de prometheus y actualizar los repositorios helm:
+
+  ```sh
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+  ```
+
+- Desplegar el helm chart de prometheus:
+
+  ```sh
+  helm -n monitoring upgrade \
+    --install prometheus \
+    prometheus-community/kube-prometheus-stack \
+    -f helm/kube-prometheus-stack/values.yaml \
+    --create-namespace \
+    --wait --version 55.4.0
+  ```
+
+- Realizar un port-forward al `Service` de prometheus para poder acceder a él a través de la URL http://localhost:9090:
+
+  ```sh
+  kubectl -n monitoring port-forward \
+    svc/prometheus-kube-prometheus-prometheus 9090:9090
+  ```
+
+- Realizar un port-forward al `Service` de Grafana para poder acceder a él a través de la URL http://localhost:3000:
+
+  ```sh
+  kubectl -n monitoring port-forward \
+    svc/prometheus-grafana 3000:80
+  ```
+
+  > Los credenciales de acceso por defecto son `username`: `admin` y `password`: `prom-operator`
+
+- Desplegar la aplicación con el helm chart creado para ello en la carpeta `helm/fast-api-webapp`:
+
+  ```sh
+  helm -n liberando-productos-practica \
+    upgrade --install my-app \
+    --create-namespace --wait helm/fast-api-webapp
+  ```
+
+#### Configuración alerta de consumo de CPU
+
+Para la configuración de la alerta de consumo de CPU se proporciona el fichero [`helm/kube-prometheus-stack/values.yaml`](helm/kube-prometheus-stack/values.yaml).
+
+```yaml
+...
+additionalPrometheusRulesMap:
+  rule-name:
+    groups:
+      - name: PythonAppRuleSet
+        rules:
+          - alert: pythonAppConsumingMoreThanRequest
+            expr: sum(rate(container_cpu_usage_seconds_total{namespace="liberando-productos-practica"}[1m])) by (pod) > sum by(pod) (kube_pod_container_resource_requests{namespace="liberando-productos-practica",resource="cpu"})
+            for: 0m
+            labels:
+              severity: critical
+              alertname: "python-app container is consuming more CPU than requested"
+            annotations:
+              summary: Pod {{ $labels.pod }} consuming more CPU than requested
+              description: "Pod more CPU than request"
+              message: Pod {{ $labels.pod }} is consuming more CPU than requested
+. . .
+```
+
+Además esta alerta se lanzará en el canal `#alerts-grafana` para esto la sección de `alert-manager` del fichero [`helm/kube-prometheus-stack/values.yaml`](helm/kube-prometheus-stack/values.yaml), se configura de la siguiente manera:
+
+```yaml
+...
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['job']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'slack'
+      routes:
+      - match:
+          alertname: Watchdog
+        receiver: 'null'
+    # This inhibt rule is a hack from: https://stackoverflow.com/questions/54806336/how-to-silence-prometheus-alertmanager-using-config-files/54814033#54814033
+    inhibit_rules:
+      - target_match_re:
+           alertname: '.+Overcommit'
+        source_match:
+           alertname: 'Watchdog'
+        equal: ['prometheus']
+    receivers:
+    - name: 'null'
+    - name: 'slack'
+      slack_configs:
+      - api_url: 'https://hooks.slack.com/services/YOUR_SLACK_WEBHOOK_HERE' # <--- AÑADIR EN ESTA LÍNEA EL WEBHOOK CREADO
+        send_resolved: true
+        channel: '#alerts-grafana-kc-8' # <--- AÑADIR EN ESTA LÍNEA EL CANAL
+        title: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] Monitoring Event Notification'
+        text: |-
+          {{ range .Alerts }}
+            *Alert:* {{ .Labels.alertname }} - `{{ .Labels.severity }}`
+            *Description:* {{ .Annotations.message }}
+            *Graph:* <{{ .GeneratorURL }}|:chart_with_upwards_trend:> *Runbook:* <{{ .Annotations.runbook_url }}|:spiral_note_pad:>
+            *Details:*
+            {{ range .Labels.SortedPairs }} • *{{ .Name }}:* `{{ .Value }}`
+            {{ end }}
+          {{ end }}
+...
+```
+
+#### Comprobación funcionamiento alerta
+
+Para forzar la alerta configurada es necesario realizar una prueba de estrés sobre el pod, para ello se deben seguir los siguientes pasos:
+
+- Para realizar esta prueba será necesario desactivar temporalmente el `HPA` configurado previamente mediante el helm de la aplicación, ya que sino nunca se lanzará la alarma ya que empezará a paliarse este problema a través de la generación de nuevas réplicas:
+
+  ```sh
+  helm -n liberando-productos-practica upgrade \
+    --install my-app --create-namespace \
+    --wait helm/fast-api-webapp \
+    --set autoscaling.enabled=false
+  ```
+
+- Obtener el POD que está ejecutando la aplicación. Es posible obtener el nombre del pod creado mediante el siguiente comando:
+
+  ```sh
+  export POD_NAME=$(kubectl get pods --namespace liberando-productos-practica -l "app.kubernetes.io/name=fast-api-webapp,app.kubernetes.io/instance=my-app" -o jsonpath="{.items[0].metadata.name}")
+  ```
+
+- Una vez obtenido el nombre del pod es necesario conectarse a él mediante una shell interactiva:
+
+  ```sh
+  kubectl -n liberando-productos-practica exec -it $POD_NAME -- /bin/sh
+  ```
+
+- Dentro del pod es necesario realizar una serie de pasos para la prueba de estrés:
+
+  - Instalación de software necesario 
+
+    ```sh
+    apk update && apk add git go
+    ```
+
+  - Descargar las herramientas para realizar la prueba de estrés:
+
+    ```sh
+    git clone https://github.com/jaeg/NodeWrecker.git
+    cd NodeWrecker
+    go build -o estres main.go
+    ```
+  
+  - Ejecutar binario compilado en el paso anterior para realizar prueba de estrés:
+
+    ```sh
+    ./estres -abuse-memory -escalate -max-duration 10000000
+    ```
+
+- A los pocos segundos de ejecutar la prueba de estrés se recibe una alerta en el canal de slack configurado, tal y como se puede ver en la imagen inferior.
+
+  ![slack-alert](./img/slack_alert_notification_example.png)
+
+  Después de un tiempo, se recibe el mensaje de recuperación de la alarma en cuestión tal y como se muestra en la siguiente captura
+
+  ![slack-alert-recovery](./img/slack_alert_notification_recovery_example.png)
+
+### Grafana
+
+Será necesario importar el dashboard creado previamente y exportado al fichero [`grafana/dashboard.json`](./grafana/dashboard.json), accediendo a la [URL específica para ello](http://localhost:3000/dashboard/import) y seleccionando la opción **Upload JSON File**.
+
+Una vez importado se podrá ver un nuevo dashboard con el nombre **Liberando Productos Dashboard** y las siguientes métricas utilizadas:
+
+- `healthcheck_requests_total`
+- `main_requests_total`
+- `bye_requests_total`
+- `server_requests_total`
+- `kube_pod_status_ready`, este permite obtener el número de veces que se ha iniciado la aplicación utilizando los labels del namespace donde se despliega la aplicación.
+
+Se verá un dashboard tal y como se puede ver en la siguiente captura
+
+![grafana-dashboard](./img/grafana_dashboard.png)
